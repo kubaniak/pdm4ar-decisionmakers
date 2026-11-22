@@ -143,6 +143,34 @@ def main():
         dump(f"ast_{k}", cfg)
 
 
+def stress(n: int, out: Path, seed: int = 0):
+    """n random disturbance bursts (public-like ranges, up to ~1.7x sigma) on public cases 2-4."""
+    global OUT
+    OUT = out
+    rng = np.random.default_rng(seed)
+    for k in range(n):
+        base = 2 + k % 3
+        cfg = load(base)
+        cfg["dynamics_disturbance"] = {
+            "start_time": float(np.round(rng.uniform(0.5, 10.0), 2)),
+            "duration": float(np.round(rng.uniform(0.5, 3.5), 2)),
+            "linear_acc_sigma": float(np.round(rng.uniform(0.1, 0.25), 3)),
+            "angular_acc_sigma": float(np.round(rng.uniform(0.02, 0.05), 3)),
+            "seed": int(rng.integers(0, 100000)),
+        }
+        dump(f"stress_p{base}_{k:03d}", cfg)
+
+
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--stress", type=int, default=0, help="write N random disturbance cases instead")
+    ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--seed", type=int, default=0)
+    a = ap.parse_args()
+    if a.stress:
+        stress(a.stress, a.out or HERE / "stress_configs", a.seed)
+    else:
+        main()
     print("\n".join(sorted(p.name for p in OUT.glob("*.yaml"))))

@@ -39,6 +39,7 @@ class TrackerParams:
     max_vel_err: float = 1.0
     use_disturbance_ff: bool = True
     dist_deadband: float = 0.01  # [m/s^2] estimates below this are treated as zero
+    dist_tau: float = 0.5  # [s] the disturbance is modelled as decaying with this time constant in the LQR
 
 
 def disturbance_input_matrix(psi: NDArray) -> NDArray:
@@ -94,7 +95,7 @@ class TVLQRTracker:
             E = expm(Mbig)
             Az[k, :nx, :nx] = E[:nx, :nx]
             Az[k, :nx, nx:] = E[:nx, nx + nu :]
-            Az[k, nx:, nx:] = np.eye(N_D)
+            Az[k, nx:, nx:] = np.exp(-dt / P.dist_tau) * np.eye(N_D)
             Bz[k, :nx] = E[:nx, nx : nx + nu]
         Q = np.zeros((nz, nz))
         Q[:nx, :nx] = np.diag(P.q)

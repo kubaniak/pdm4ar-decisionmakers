@@ -21,14 +21,38 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
+def apply_overrides(overrides: dict):
+    """Override default parameters of SolverParameters / TrackerParams / MyAgentParams (by field name)."""
+    import dataclasses
+    import functools
+
+    from pdm4ar.exercises.ex13 import agent as agent_module
+
+    for name in ("SolverParameters", "TrackerParams", "MyAgentParams"):
+        cls = getattr(agent_module, name)
+        fields = {f.name for f in dataclasses.fields(cls)}
+        mine = {k: v for k, v in overrides.items() if k in fields}
+        if mine:
+            setattr(agent_module, name, functools.partial(cls, **mine))
+    known = set()
+    for name in ("SolverParameters", "TrackerParams", "MyAgentParams"):
+        obj = getattr(agent_module, name)
+        cls = obj.func if hasattr(obj, "func") else obj
+        known |= {f.name for f in dataclasses.fields(cls)}
+    unknown = set(overrides) - known
+    if unknown:
+        raise KeyError(f"unknown parameters {unknown}")
+
+
 def _run_one(args):
-    path, verbose = args
+    path, verbose, overrides = args
     logging.disable(logging.WARNING)
     import warnings
 
     warnings.filterwarnings("ignore")
     from pdm4ar.exercises.ex13 import agent as agent_module
 
+    apply_overrides(overrides)
     agent_module.Config.VERBOSE = verbose
     from scenario_utils import run, PLAYER
 
@@ -67,10 +91,15 @@ def main(argv=None):
     ap.add_argument("configs", nargs="*")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count())
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="override a parameter default, e.g. --set term_pos_frac=0.5 (python literal)")
     args = ap.parse_args(argv)
+    import ast
+
+    overrides = {k: ast.literal_eval(v) for k, v in (kv.split("=", 1) for kv in args.set)}
     paths = [resolve(p) for p in args.configs] or PUBLIC
     with ProcessPoolExecutor(max_workers=args.jobs) as ex:
-        results = list(ex.map(_run_one, [(str(p), args.verbose) for p in paths]))
+        results = list(ex.map(_run_one, [(str(p), args.verbose, overrides) for p in paths]))
     for r in results:
         flag = "OK " if r["goal"] >= 1 and not r["collision"] else "FAIL"
         print(

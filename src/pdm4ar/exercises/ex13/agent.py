@@ -15,7 +15,8 @@ from dg_commons.sim.models.spaceship_structures import SpaceshipGeometry, Spaces
 
 from pdm4ar.exercises.ex13.geometry import wrap_angle
 from pdm4ar.exercises.ex13.planner import Plan, SpaceshipPlanner
-from pdm4ar.exercises.ex13.tracker import TVLQRTracker
+from pdm4ar.exercises.ex13.planner import SolverParameters
+from pdm4ar.exercises.ex13.tracker import TrackerParams, TVLQRTracker
 from pdm4ar.exercises_def.ex13.goal import SpaceshipTarget, DockingTarget
 from pdm4ar.exercises_def.ex13.utils_params import PlanetParams, AsteroidParams
 from pdm4ar.exercises_def.ex13.utils_plot import plot_traj
@@ -127,12 +128,14 @@ class SpaceshipAgent(Agent):
             sp=self.sp,
             boundary_corners=boundary,
             dock=dock,
+            params=SolverParameters(),
         )
         self.tracker = TVLQRTracker(
             integrator=self.planner.integrator,
             thrust_limits=self.sp.thrust_limits,
             ddelta_limits=self.sp.ddelta_limits,
             delta_limits=self.sp.delta_limits,
+            params=TrackerParams(),
         )
 
         plan = self.planner.plan_initial(self.init_state, self.goal_state, self.goal_tols, t0=0.0)
@@ -243,11 +246,9 @@ class SpaceshipAgent(Agent):
             rollout = self.tracker.rollout(
                 x_c, t, self.plan.t_end, d_hat=self.tracker.d_hat, d_duration=self._remaining_burst(t)
             )
-            ts, xs, _ = self.tracker.rollout(
-                x_c, t, min(self.plan.t_end, t + P.safety_horizon), d_hat=self.tracker.d_hat,
-                d_duration=self._remaining_burst(t),
-            )
-            current_clearance = float(np.min(self.planner.checker.clearance(xs, ts)))
+            ts, xs, _ = rollout
+            horizon = ts <= t + P.safety_horizon
+            current_clearance = float(np.min(self.planner.checker.clearance(xs[horizon], ts[horizon])))
         urgent = current_clearance <= 0.0
         disturbance = None
         if np.any(self.tracker.d_hat != 0.0):
