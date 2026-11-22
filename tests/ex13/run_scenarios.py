@@ -30,6 +30,7 @@ def apply_overrides(overrides: dict):
 
     for name in ("SolverParameters", "TrackerParams", "MyAgentParams"):
         cls = getattr(agent_module, name)
+        cls = cls.func if isinstance(cls, functools.partial) else cls  # worker processes are reused
         fields = {f.name for f in dataclasses.fields(cls)}
         mine = {k: v for k, v in overrides.items() if k in fields}
         if mine:
