@@ -1,0 +1,85 @@
+agents:
+  PDM4ARSpaceship:
+    color: blue
+    state:
+      x: -9.0
+      y: 0.0
+      psi: 0.0
+      vx: 0.0
+      vy: 0.0
+      dpsi: 0.0
+      delta: 0.0
+      m: 2.5
+    goal:
+      type: dock
+      state:
+        x: 8.5
+        y: 0.0
+        psi: 3.14159
+        vx: 0.0
+        vy: 0.0
+        dpsi: 0.0
+      pos_tolerance: 0.5
+      dir_tolerance: 0.1
+      vel_tolerance: 0.2
+      add_land_space: 0.5
+      arms_length: 1.3
+      offset: 1.8
+planets:
+  Namek:
+    center:
+    - 2.5
+    - 5.0
+    radius: 1.8
+  Gaia:
+    center:
+    - -7.0
+    - -5.0
+    radius: 1.5
+asteroids:
+  A0:
+    start:
+    - -1.87
+    - 3.4732000000000003
+    radius: 0.93
+    velocity:
+    - 0.0
+    - -0.76
+    orientation: 0.0
+  A1:
+    start:
+    - -3.96
+    - 6.023999999999999
+    radius: 0.72
+    velocity:
+    - 0.0
+    - -1.2
+    orientation: 0.0
+  A2:
+    start:
+    - -0.19
+    - 8.18
+    radius: 0.65
+    velocity:
+    - 0.0
+    - -1.0
+    orientation: 0.0
+boundary:
+  corners:
+  - - -11
+    - -11
+  - - -11
+    - 11
+  - - 11
+    - 11
+  - - 11
+    - -11
+  - - -11
+    - -11
+seed: 98
+dynamics_disturbance:
+  start_time: 1.89
+  duration: 1.13
+  linear_acc_sigma: 0.106
+  angular_acc_sigma: 0.038
+  seed: 42
