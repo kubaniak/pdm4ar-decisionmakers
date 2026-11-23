@@ -39,19 +39,29 @@ class SpaceshipDyn:
         extract the state from self.x the following way:
         0x 1y 2psi 3vx 4vy 5dpsi 6delta 7m
         """
-        # TODO: Implement nominal dynamics, scaled by final time self.p[0].
-        # vx/vy are body-frame velocities; ddelta is the nozzle angular rate.
+        x, y, psi, vx, vy, dpsi, delta, m = self.x
+        thrust, ddelta = self.u
+        t_f = self.p[0]
 
-        f = spy.zeros(self.n_x, 1)  # replace with your dynamics, as in the example below
-        "f[0] = ..."
-        "f[1] = ..."
-        "..."
-        "f[7] = ..."
+        l_r = self.sg.l_r
+        Iz = self.sg.Iz
+        C_T = self.sp.C_T
 
-        # HINT for the dynamics: SymPy is a library for symbolic mathematics.
-        # Here you’ll need symbolic math, not numerical math.
-        # That means you should use SymPy functions (like sympy.sin, sympy.exp, …)
-        # together with symbols, instead of numerical functions from numpy or math.
+        # Nominal dynamics in physical time (body-frame velocities, rotating-frame terms)
+        f_phys = spy.Matrix(
+            [
+                vx * spy.cos(psi) - vy * spy.sin(psi),
+                vx * spy.sin(psi) + vy * spy.cos(psi),
+                dpsi,
+                thrust / m * spy.cos(delta) + dpsi * vy,
+                thrust / m * spy.sin(delta) - dpsi * vx,
+                -l_r / Iz * thrust * spy.sin(delta),
+                ddelta,
+                -C_T * spy.Abs(thrust),
+            ]
+        )
+        # Normalized time tau = t / t_f  ->  dX/dtau = t_f * f(X, U)
+        f = t_f * f_phys
 
         # Jacobians and matrices of the system (don't need to change)
         A = f.jacobian(self.x)

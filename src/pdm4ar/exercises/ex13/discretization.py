@@ -349,3 +349,175 @@ class FirstOrderHold(DiscretizationMethod):
     def _dxdt(self, x: NDArray, t: float, u_t0: NDArray, u_t1: NDArray, p: NDArray) -> NDArray:
         u = u_t0 + (self.K - 1) * t * (u_t1 - u_t0)
         return np.squeeze(self.f(x, u, p))
+
+
+class BatchFirstOrderHold:
+    """
+    Vectorized first-order-hold discretization.
+
+    Same linear model as :class:`FirstOrderHold`
+
+        x[k+1] = A_k x[k] + B-_k u[k] + B+_k u[k+1] + F_k p + r_k
+
+    but all K-1 intervals are integrated simultaneously with a fixed-step RK4 scheme on the
+    variational (sensitivity) equations, which avoids per-interval ``odeint`` calls and matrix
+    inversions. The Jacobians are hand-coded from the same equations as ``SpaceshipDyn`` (unit tests
+    check them against the SymPy version). Matrices are returned as stacked arrays (K-1, n, m).
+    """
+
+    n_x = 8
+    n_u = 2
+    n_p = 1
+
+    def __init__(self, l_r: float, Iz: float, C_T: float, K: int, N_sub: int = 5):
+        self.l_r = float(l_r)
+        self.Iz = float(Iz)
+        self.C_T = float(C_T)
+        self.K = K
+        self.N_sub = N_sub  # RK4 steps per interval
+
+    # ---------------------------------------------------------------- dynamics (physical time)
+    def f_phys(self, x: NDArray, u: NDArray) -> NDArray:
+        """x (N, 8), u (N, 2) -> dx/dt (N, 8)."""
+        psi, vx, vy, w, d, m = x[:, 2], x[:, 3], x[:, 4], x[:, 5], x[:, 6], x[:, 7]
+        F, ud = u[:, 0], u[:, 1]
+        c, s = np.cos(psi), np.sin(psi)
+        cd, sd = np.cos(d), np.sin(d)
+        out = np.empty_like(x)
+        out[:, 0] = vx * c - vy * s
+        out[:, 1] = vx * s + vy * c
+        out[:, 2] = w
+        out[:, 3] = F / m * cd + w * vy
+        out[:, 4] = F / m * sd - w * vx
+        out[:, 5] = -self.l_r / self.Iz * F * sd
+        out[:, 6] = ud
+        out[:, 7] = -self.C_T * np.abs(F)
+        return out
+
+    def jacobians_phys(self, x: NDArray, u: NDArray) -> tuple[NDArray, NDArray, NDArray]:
+        """Returns f (N,8), A (N,8,8), B (N,8,2) in physical time."""
+        N = x.shape[0]
+        psi, vx, vy, w, d, m = x[:, 2], x[:, 3], x[:, 4], x[:, 5], x[:, 6], x[:, 7]
+        F = u[:, 0]
+        c, s = np.cos(psi), np.sin(psi)
+        cd, sd = np.cos(d), np.sin(d)
+        f = self.f_phys(x, u)
+        A = np.zeros((N, 8, 8))
+        A[:, 0, 2] = -vx * s - vy * c
+        A[:, 0, 3] = c
+        A[:, 0, 4] = -s
+        A[:, 1, 2] = vx * c - vy * s
+        A[:, 1, 3] = s
+        A[:, 1, 4] = c
+        A[:, 2, 5] = 1.0
+        A[:, 3, 4] = w
+        A[:, 3, 5] = vy
+        A[:, 3, 6] = -F / m * sd
+        A[:, 3, 7] = -F / m**2 * cd
+        A[:, 4, 3] = -w
+        A[:, 4, 5] = -vx
+        A[:, 4, 6] = F / m * cd
+        A[:, 4, 7] = -F / m**2 * sd
+        A[:, 5, 6] = -self.l_r / self.Iz * F * cd
+        B = np.zeros((N, 8, 2))
+        B[:, 3, 0] = cd / m
+        B[:, 4, 0] = sd / m
+        B[:, 5, 0] = -self.l_r / self.Iz * sd
+        B[:, 6, 1] = 1.0
+        B[:, 7, 0] = -self.C_T * np.sign(F)
+        return f, A, B
+
+    # ---------------------------------------------------------------- discretization
+    def _deriv(self, x, Phi, Sm, Sp, Sf, u0, u1, beta, tf, dist=None):
+        u = u0 + beta * (u1 - u0)
+        f, A, B = self.jacobians_phys(x, u)
+        if dist is not None:
+            # additive world-frame acceleration (ax, ay) and angular acceleration, active on masked intervals
+            d, active = dist
+            c, s = np.cos(x[:, 2]), np.sin(x[:, 2])
+            ax, ay, al = d[0] * active, d[1] * active, d[2] * active
+            f = f.copy()
+            f[:, 3] += c * ax + s * ay
+            f[:, 4] += -s * ax + c * ay
+            f[:, 5] += al
+            A[:, 3, 2] += -s * ax + c * ay
+            A[:, 4, 2] += -c * ax - s * ay
+        At = tf * A
+        Bt = tf * B
+        dx = tf * f
+        dPhi = At @ Phi
+        dSm = At @ Sm + Bt * (1.0 - beta)
+        dSp = At @ Sp + Bt * beta
+        dSf = np.einsum("nij,nj->ni", At, Sf) + f
+        return dx, dPhi, dSm, dSp, dSf
+
+    def calculate_discretization(self, X: NDArray, U: NDArray, p: NDArray, dense: bool = False, disturbance=None):
+        """
+        :param X: (8, K) reference states, U: (2, K) reference inputs, p: (1,) final time
+        :return: dict with A (K-1,8,8), Bm, Bp (K-1,8,2), F (K-1,8), r (K-1,8),
+                 x_next (K-1,8) nonlinear propagation of each node over its interval and, if dense,
+                 x_dense (K-1, N_sub+1, 8) intermediate nonlinear states.
+        :param disturbance: optional (d (3,), duration [s]): constant world-frame acceleration and angular
+                 acceleration acting from the start of the trajectory for `duration` seconds.
+        """
+        K = X.shape[1]
+        n = K - 1
+        tf = float(np.asarray(p).reshape(-1)[0])
+        x = X[:, :-1].T.copy()
+        u0 = U[:, :-1].T
+        u1 = U[:, 1:].T
+        Phi = np.repeat(np.eye(8)[None], n, axis=0)
+        Sm = np.zeros((n, 8, 2))
+        Sp = np.zeros((n, 8, 2))
+        Sf = np.zeros((n, 8))
+        h = 1.0 / (K - 1) / self.N_sub  # step in normalized time
+        hb = 1.0 / self.N_sub  # step in interpolation coordinate beta
+        xs = [x.copy()] if dense else None
+        dist = None
+        if disturbance is not None and disturbance[1] > 0 and np.any(disturbance[0]):
+            t_start = tf * np.arange(n) / (K - 1)
+            dist = (np.asarray(disturbance[0], dtype=float), (t_start < disturbance[1]).astype(float))
+        for i in range(self.N_sub):
+            b0 = i * hb
+            k1 = self._deriv(x, Phi, Sm, Sp, Sf, u0, u1, b0, tf, dist)
+            y2 = [v + 0.5 * h * d for v, d in zip((x, Phi, Sm, Sp, Sf), k1)]
+            k2 = self._deriv(*y2, u0, u1, b0 + 0.5 * hb, tf, dist)
+            y3 = [v + 0.5 * h * d for v, d in zip((x, Phi, Sm, Sp, Sf), k2)]
+            k3 = self._deriv(*y3, u0, u1, b0 + 0.5 * hb, tf, dist)
+            y4 = [v + h * d for v, d in zip((x, Phi, Sm, Sp, Sf), k3)]
+            k4 = self._deriv(*y4, u0, u1, b0 + hb, tf, dist)
+            x, Phi, Sm, Sp, Sf = [
+                v + h / 6.0 * (a + 2 * b + 2 * c + d)
+                for v, a, b, c, d in zip((x, Phi, Sm, Sp, Sf), k1, k2, k3, k4)
+            ]
+            if dense:
+                xs.append(x.copy())
+        r = (
+            x
+            - np.einsum("nij,nj->ni", Phi, X[:, :-1].T)
+            - np.einsum("nij,nj->ni", Sm, u0)
+            - np.einsum("nij,nj->ni", Sp, u1)
+            - Sf * tf
+        )
+        out = {"A": Phi, "Bm": Sm, "Bp": Sp, "F": Sf, "r": r, "x_next": x}
+        if dense:
+            out["x_dense"] = np.stack(xs, axis=1)
+        return out
+
+    def simulate_zoh(self, x0: NDArray, u_of_t, t_grid: NDArray, n_rk: int = 4) -> NDArray:
+        """Integrate the nominal model with piecewise-constant inputs on t_grid (like the simulator)."""
+        xs = np.zeros((len(t_grid), 8))
+        xs[0] = x0
+        x = np.asarray(x0, dtype=float)[None].copy()
+        for i in range(len(t_grid) - 1):
+            dt = t_grid[i + 1] - t_grid[i]
+            u = np.asarray(u_of_t(t_grid[i]), dtype=float)[None]
+            h = dt / n_rk
+            for _ in range(n_rk):
+                k1 = self.f_phys(x, u)
+                k2 = self.f_phys(x + 0.5 * h * k1, u)
+                k3 = self.f_phys(x + 0.5 * h * k2, u)
+                k4 = self.f_phys(x + h * k3, u)
+                x = x + h / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+            xs[i + 1] = x[0]
+        return xs
